@@ -1,5 +1,0 @@
-{
-  "name": "Final",
-  "forwardPorts": [5000],
-  "postStartCommand": "python3 app.py"
-}
