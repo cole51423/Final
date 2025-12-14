@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Neural Network Forward Pass Visualizer</title>
+    <style>
+                .layer-params-row { display: flex; flex-direction: row; align-items: flex-start; gap: 32px; margin-bottom: 24px; }
+                .matrix-block { display: flex; flex-direction: column; align-items: center; }
+                .matrix-arrow { font-size: 2em; color: #bbb; margin: 0 12px; }
+                .network { position: relative; }
+                .network-svg { position: absolute; left: 0; top: 0; pointer-events: none; z-index: 0; }
+                .layer { z-index: 1; }
+            .matrix-table { border-collapse: collapse; margin: 8px 0 16px 0; }
+            .matrix-table td, .matrix-table th { border: 1px solid #bbb; padding: 4px 8px; text-align: center; }
+            .matrix-table th { background: #f0f0f0; }
+            .matrix-label { margin-bottom: 2px; font-weight: 500; color: #4a90e2; }
+        body { font-family: Arial, sans-serif; margin: 40px; background: #f9f9fb; }
+        .container { max-width: 900px; margin: auto; background: #fff; border-radius: 12px; box-shadow: 0 2px 12px #0001; padding: 32px; }
+        .network { display: flex; flex-direction: row; justify-content: center; align-items: center; min-height: 400px; margin-bottom: 20px; }
+        .layer { display: flex; flex-direction: column; align-items: center; justify-content: center; margin: 10px 0; flex: 1 1 0; height: 100%; }
+        .neuron { border: 2px solid #4a90e2; border-radius: 50%; width: 48px; height: 48px; display: flex; align-items: center; justify-content: center; margin: 7px; background: #eaf3fb; font-weight: bold; font-size: 1.1em; transition: background 0.2s; }
+        .neuron.input { background: #d1f7c4; border-color: #6ac36a; }
+        .neuron.output { background: #ffe0b2; border-color: #ff9800; }
+        .neuron.hidden { background: #f0e6ff; border-color: #a084e8; }
+        .controls { margin: 20px 0; display: flex; flex-wrap: wrap; gap: 16px; align-items: center; }
+        input[type=number] { width: 60px; margin: 2px; }
+        .weights, .biases { margin: 10px 0; }
+        .output { font-weight: bold; margin-top: 20px; font-size: 1.2em; color: #333; }
+        button { background: #4a90e2; color: #fff; border: none; border-radius: 6px; padding: 8px 18px; font-size: 1em; cursor: pointer; margin-right: 8px; transition: background 0.2s; }
+        button:hover { background: #357ab8; }
+        .hidden-values { margin-top: 18px; background: #f7f7fa; border-radius: 8px; padding: 12px; display: none; }
+        .hidden-values.visible { display: block; }
+        .section-title { font-size: 1.1em; margin-top: 24px; margin-bottom: 8px; color: #4a90e2; }
+    </style>
+</head>
+<body>
+    <div id="error-message" style="display:none;color:#fff;background:#e74c3c;padding:12px 20px;margin-bottom:18px;border-radius:8px;font-weight:bold;text-align:center;"></div>
+    <script>
+                function updateStructure() {
+                    const val = document.getElementById('structure-input').value;
+                    let arr = val.split(',').map(x => parseInt(x.trim())).filter(x => !isNaN(x) && x > 0);
+                    const errorDiv = document.getElementById('error-message');
+                    errorDiv.style.display = 'none';
+                    errorDiv.innerText = '';
+                    if (arr.length < 2) {
+                        errorDiv.innerText = 'Structure must have at least 2 layers.';
+                        errorDiv.style.display = 'block';
+                        return;
+                    }
+                    if (arr.some(x => x > 7)) {
+                        errorDiv.innerText = 'A layer exceeds 7 neurons and will not fit on the page.';
+                        errorDiv.style.display = 'block';
+                        return;
+                    }
+                    structure = arr;
+                    // Reset weights, biases, activations
+                    fetch('/random-params', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ structure })
+                    })
+                    .then(res => res.json())
+                    .then(data => {
+                        weights = data.weights;
+                        biases = data.biases;
+                        activations = [];
+                        inputs = Array(structure[0]).fill(0);
+                        createInputFields();
+                        createParamsFields();
+                        drawNetwork();
+                        document.getElementById('output').innerText = '';
+                        document.getElementById('hidden-values').classList.remove('visible');
+                        document.getElementById('hidden-values').innerHTML = '';
+                        hiddenVisible = false;
+                        document.getElementById('toggle-hidden-btn').innerText = 'Show Hidden Values';
+                    });
+                }
+        var structure = JSON.parse('{{ structure|tojson|safe }}');
+    </script>
+    <div class="container">
+        <h1 style="text-align:center; margin-bottom: 24px;">Neural Network Forward Pass Visualizer</h1>
+        <form id="network-form" autocomplete="off">
+            <div class="controls" style="margin-bottom: 12px;">
+                <label><b>Network Structure:</b></label>
+                <input type="text" id="structure-input" value="{{ structure|join(',') }}" style="width:180px;" />
+                <button type="button" onclick="updateStructure()">Update Structure</button>
+                <span style="font-size:0.95em;color:#888;">(comma-separated, e.g. 3,4,2)</span>
+            </div>
+            <div class="controls">
+                <label><b>Input values:</b></label>
+                <span id="inputs"></span>
+                <button type="button" onclick="forwardPass()">Forward Pass</button>
+                <button type="button" id="toggle-hidden-btn" onclick="toggleHiddenValues()">Show Hidden Values</button>
+            </div>
+            <div id="params"></div>
+        </form>
+        <div class="section-title">Network Structure</div>
+        <div class="network" id="network-visual"></div>
+        <div class="output" id="output"></div>
+        <div class="hidden-values" id="hidden-values"></div>
+    </div>
+    <script>
+        let weights = [];
+        let biases = [];
+        let inputs = Array(structure[0]).fill(0);
+        let activations = [];
+        let hiddenVisible = false;
+
+        function createInputFields() {
+            const container = document.getElementById('inputs');
+            container.innerHTML = '';
+            for (let i = 0; i < structure[0]; i++) {
+                const inp = document.createElement('input');
+                inp.type = 'number';
+                inp.value = 0;
+                inp.step = 'any';
+                inp.oninput = () => { inputs[i] = parseFloat(inp.value); };
+                container.appendChild(inp);
+            }
+        }
+
+        function createParamsFields() {
+            const paramsDiv = document.getElementById('params');
+            paramsDiv.innerHTML = '';
+            for (let l = 1; l < structure.length; l++) {
+                const rowDiv = document.createElement('div');
+                rowDiv.className = 'layer-params-row';
+                // Weights as matrix
+                const wBlock = document.createElement('div');
+                wBlock.className = 'matrix-block';
+                const wLabel = document.createElement('div');
+                wLabel.className = 'matrix-label';
+                wLabel.innerText = `Weights (Layer ${l})`;
+                wBlock.appendChild(wLabel);
+                // Randomize Weights Button
+                const wBtn = document.createElement('button');
+                wBtn.type = 'button';
+                wBtn.innerText = 'Randomize Weights';
+                wBtn.onclick = () => randomizeLayerWeights(l-1);
+                wBtn.style.marginBottom = '6px';
+                wBlock.appendChild(wBtn);
+                const wTable = document.createElement('table');
+                wTable.className = 'matrix-table';
+                for (let i = 0; i < structure[l]; i++) {
+                    const row = document.createElement('tr');
+                    for (let j = 0; j < structure[l-1]; j++) {
+                        const cell = document.createElement('td');
+                        const inp = document.createElement('input');
+                        inp.type = 'number';
+                        inp.step = 'any';
+                        inp.value = weights[l-1][i][j];
+                        inp.oninput = () => { weights[l-1][i][j] = parseFloat(inp.value); };
+                        cell.appendChild(inp);
+                        row.appendChild(cell);
+                    }
+                    wTable.appendChild(row);
+                }
+                wBlock.appendChild(wTable);
+                rowDiv.appendChild(wBlock);
+                // Arrow visual
+                const arrow = document.createElement('div');
+                arrow.className = 'matrix-arrow';
+                arrow.innerHTML = '&rarr;';
+                rowDiv.appendChild(arrow);
+                // Biases as column vector
+                const bBlock = document.createElement('div');
+                bBlock.className = 'matrix-block';
+                const bLabel = document.createElement('div');
+                bLabel.className = 'matrix-label';
+                bLabel.innerText = `Biases (Layer ${l})`;
+                bBlock.appendChild(bLabel);
+                // Randomize Biases Button
+                const bBtn = document.createElement('button');
+                bBtn.type = 'button';
+                bBtn.innerText = 'Randomize Biases';
+                bBtn.onclick = () => randomizeLayerBiases(l-1);
+                bBtn.style.marginBottom = '6px';
+                bBlock.appendChild(bBtn);
+                const bTable = document.createElement('table');
+                bTable.className = 'matrix-table';
+                for (let i = 0; i < structure[l]; i++) {
+                    const row = document.createElement('tr');
+                    const cell = document.createElement('td');
+                    const inp = document.createElement('input');
+                    inp.type = 'number';
+                    inp.step = 'any';
+                    inp.value = biases[l-1][i][0];
+                    inp.oninput = () => { biases[l-1][i][0] = parseFloat(inp.value); };
+                    cell.appendChild(inp);
+                    row.appendChild(cell);
+                    bTable.appendChild(row);
+                }
+                bBlock.appendChild(bTable);
+                rowDiv.appendChild(bBlock);
+                paramsDiv.appendChild(rowDiv);
+            }
+        }
+
+        function randomizeLayerWeights(layerIdx) {
+            fetch('/random-params', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ structure })
+            })
+            .then(res => res.json())
+            .then(data => {
+                weights[layerIdx] = data.weights[layerIdx];
+                createParamsFields();
+                drawNetwork();
+            });
+        }
+
+        function randomizeLayerBiases(layerIdx) {
+            fetch('/random-params', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ structure })
+            })
+            .then(res => res.json())
+            .then(data => {
+                biases[layerIdx] = data.biases[layerIdx];
+                createParamsFields();
+                drawNetwork();
+            });
+        }
+
+        function randomizeWeights() {
+            fetch('/random-params', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ structure })
+            })
+            .then(res => res.json())
+            .then(data => {
+                weights = data.weights;
+                createParamsFields();
+                drawNetwork();
+            });
+        }
+
+        function randomizeBiases() {
+            fetch('/random-params', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ structure })
+            })
+            .then(res => res.json())
+            .then(data => {
+                biases = data.biases;
+                createParamsFields();
+                drawNetwork();
+            });
+        }
+
+        function drawNetwork() {
+            const netDiv = document.getElementById('network-visual');
+            netDiv.innerHTML = '';
+            // SVG for connections
+            let svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+            svg.classList.add('network-svg');
+            // Temporarily set width/height to 1, will resize after DOM update
+            svg.setAttribute('width', 1);
+            svg.setAttribute('height', 1);
+            netDiv.appendChild(svg);
+            // Draw layers and neurons
+            let layerDivs = [];
+            for (let l = 0; l < structure.length; l++) {
+                const layerDiv = document.createElement('div');
+                layerDiv.className = 'layer';
+                for (let n = 0; n < structure[l]; n++) {
+                    const neuronDiv = document.createElement('div');
+                    let neuronType = l === 0 ? 'input' : (l === structure.length - 1 ? 'output' : 'hidden');
+                    neuronDiv.className = 'neuron ' + neuronType;
+                    if (l === 0) {
+                        neuronDiv.innerText = inputs[n];
+                    } else if (l === structure.length - 1) {
+                        if (activations.length && activations[l]) {
+                            neuronDiv.innerText = activations[l][n].toFixed(3);
+                        } else {
+                            neuronDiv.innerText = '';
+                        }
+                    } else {
+                        // Hidden layer: only show if requested
+                        if (hiddenVisible && activations.length && activations[l]) {
+                            neuronDiv.innerText = activations[l][n].toFixed(3);
+                        } else {
+                            neuronDiv.innerText = '';
+                        }
+                    }
+                    layerDiv.appendChild(neuronDiv);
+                }
+                netDiv.appendChild(layerDiv);
+                layerDivs.push(layerDiv);
+            }
+            // Draw SVG lines for connections
+            setTimeout(() => {
+                // Resize SVG to match network div
+                svg.setAttribute('width', netDiv.offsetWidth);
+                svg.setAttribute('height', netDiv.offsetHeight);
+                svg.innerHTML = '';
+                for (let l = 0; l < layerDivs.length - 1; l++) {
+                    const fromLayer = layerDivs[l].children;
+                    const toLayer = layerDivs[l+1].children;
+                    for (let i = 0; i < fromLayer.length; i++) {
+                        const from = fromLayer[i].getBoundingClientRect();
+                        for (let j = 0; j < toLayer.length; j++) {
+                            const to = toLayer[j].getBoundingClientRect();
+                            // Calculate relative positions
+                            const netRect = netDiv.getBoundingClientRect();
+                            const x1 = from.left + from.width/2 - netRect.left;
+                            const y1 = from.top + from.height/2 - netRect.top;
+                            const x2 = to.left + to.width/2 - netRect.left;
+                            const y2 = to.top + to.height/2 - netRect.top;
+                            const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+                            line.setAttribute('x1', x1);
+                            line.setAttribute('y1', y1);
+                            line.setAttribute('x2', x2);
+                            line.setAttribute('y2', y2);
+                            line.setAttribute('stroke', '#bbb');
+                            line.setAttribute('stroke-width', '2');
+                            svg.appendChild(line);
+                        }
+                    }
+                }
+            }, 0);
+        }
+
+        function randomizeParams() {
+            fetch('/random-params', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ structure })
+            })
+            .then(res => res.json())
+            .then(data => {
+                weights = data.weights;
+                biases = data.biases;
+                createParamsFields();
+            });
+        }
+
+        function forwardPass() {
+            fetch('/forward', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ inputs, weights, biases })
+            })
+            .then(res => res.json())
+            .then(data => {
+                activations = data.activations;
+                document.getElementById('output').innerText = 'Output: ' + data.output.map(x => x.toFixed(4)).join(', ');
+                drawNetwork();
+                // Always hide hidden values after forward pass until user clicks button
+                hiddenVisible = false;
+                const btn = document.getElementById('toggle-hidden-btn');
+                btn.innerText = 'Show Hidden Values';
+                document.getElementById('hidden-values').classList.remove('visible');
+                document.getElementById('hidden-values').innerHTML = '';
+            });
+        }
+
+        function toggleHiddenValues() {
+            hiddenVisible = !hiddenVisible;
+            const btn = document.getElementById('toggle-hidden-btn');
+            if (hiddenVisible) {
+                btn.innerText = 'Hide Hidden Values';
+                showHiddenValues();
+            } else {
+                btn.innerText = 'Show Hidden Values';
+                document.getElementById('hidden-values').classList.remove('visible');
+                document.getElementById('hidden-values').innerHTML = '';
+            }
+            drawNetwork();
+        }
+
+        function showHiddenValues() {
+            const div = document.getElementById('hidden-values');
+            if (!activations.length) {
+                div.innerHTML = '<i>Run a forward pass to see hidden values.</i>';
+                div.classList.add('visible');
+                return;
+            }
+            let html = '<b>Hidden Layer Values:</b><br>';
+            for (let l = 1; l < structure.length - 1; l++) {
+                html += `Layer ${l} : `;
+                html += activations[l].map(x => x.toFixed(4)).join(', ');
+                html += '<br>';
+            }
+            div.innerHTML = html;
+            div.classList.add('visible');
+        }
+
+        // Initialize
+        function init() {
+            fetch('/random-params', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ structure })
+            })
+            .then(res => res.json())
+            .then(data => {
+                weights = data.weights;
+                biases = data.biases;
+                activations = [];
+                createInputFields();
+                createParamsFields();
+                drawNetwork();
+            });
+        }
+        window.onload = init;
+    </script>
+</body>
+</html>
